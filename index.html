@@ -294,6 +294,7 @@ details.adv[open]>summary::after{content:"－"}
       <span class="maptag gover" id="gOver" hidden></span>
       <button type="button" class="gzoom" id="gZoomBtn" hidden>전체 보기</button>
       <button type="button" class="gzoom" id="gBendBtn" style="top:40px" hidden>휨 강조 끄기</button>
+      <button type="button" class="gzoom" id="gRotBtn" style="top:72px" hidden>티 방향으로 보기</button>
       <svg id="gsvg" viewBox="0 0 360 360" role="img" aria-label="그린"></svg>
       <span class="maptag" id="gTag">탭하면 공 이동 · 깃발은 끌어서</span>
     </div>
@@ -403,6 +404,13 @@ details.adv[open]>summary::after{content:"－"}
       <div id="geoList"></div>
       <p class="note">그린 중앙과 티 하나 이상이 있으면 GPS 모드에서 내 위치가 도식 위에 표시됩니다. 현장에서 저장하거나 지도 앱 좌표를 붙여넣으세요.</p>
     </div>
+    <div class="card" id="geoXCard">
+      <h3>좌표 내보내기 · 가져오기</h3>
+      <p class="muted" id="geoXInfo" style="margin:0 0 8px"></p>
+      <div class="row"><button class="btn primary" type="button" id="geoXCopy">저장한 좌표 복사</button><button class="btn" type="button" id="geoXImport">붙여넣은 좌표 가져오기</button></div>
+      <textarea id="geoXText" rows="5" style="width:100%;box-sizing:border-box;margin-top:8px;font-size:12px" placeholder="복사한 좌표 글이 여기에 나옵니다. 다른 휴대폰에서 받은 글을 여기에 붙여넣고 '가져오기'를 누르세요." aria-label="좌표 글"></textarea>
+      <p class="note">이 골프장의 모든 홀에 저장된 티·그린 GPS 좌표를 글로 복사합니다. 카톡 등으로 보내 다른 휴대폰에서 가져오거나, Claude에게 붙여넣어 공용 데이터에 반영할 수 있습니다.</p>
+    </div>
     <div class="card">
       <h3>골프장 추가</h3>
       <div class="row"><input type="text" id="ncName" placeholder="골프장 이름"></div>
@@ -451,7 +459,7 @@ const S={db:null,uid:null,courses:{},
   me:null,fix:null,watchId:null,gpsState:"off",adjust:0,view:"hole",shotStart:null,holeView:"photo",tapMode:"me",aim:null,wps:[],zoom:1,calib:null,assets:null,
   profile:{clubs:DEFAULT_CLUBS.map(n=>({name:n,d:0})),unit:"m",comp:false,shots:[],speed:{v:0,unit:"m"},past:0.3,greenView:"heat",shadeRule:"unknown",slopeModel:"heat"},greens:{},dragging:false,greenTap:"ball",bendX:3};
 
-S.planOn=lget("gd.planOn")!=="0";S.pendScroll=true;
+S.planOn=lget("gd.planOn")!=="0";S.gRot=lget("gd.gRot")||"me";S.userScrollAt=0;S.pendScroll=true;
 function setPlan(v){S.planOn=!!v;lset("gd.planOn",v?"1":"0");const b=document.getElementById("hrPlan");if(b)b.textContent=v?"추천 공략 숨기기":"추천 공략 보기"}
 /* ---------- helpers ---------- */
 const U=()=>S.profile.unit, show=m=>U()==="yd"?m/YD:m, toM=v=>U()==="yd"?v*YD:v, fmt=m=>String(Math.round(show(m)));
@@ -524,7 +532,10 @@ function gpsStart(){
   S.gpsState="wait";renderGpsTag();
   S.watchId=navigator.geolocation.watchPosition(p=>{
     S.fix={lat:p.coords.latitude,lng:p.coords.longitude,acc:p.coords.accuracy};S.gpsState="on";
-    if(S.view==="clubs")renderShotLive();else if(S.mode==="gps")render();else renderGpsTag();
+    if(S.view==="clubs")renderShotLive();else if(S.mode==="gps"){render();
+      /* 홀 사진: 내가 화면을 직접 움직인 뒤 10초 동안은 따라가지 않음 */
+      if(S.view==="hole"&&S.holeView==="photo"&&Date.now()-S.userScrollAt>10000)scrollToMe()}
+    else renderGpsTag();
   },err=>{
     S.gpsState="err";renderGpsTag();
     toast(err.code===1?"위치 권한이 없습니다. 이 화면에서 위치 사용이 막혀 있을 수 있어요.":"위치를 확인할 수 없습니다.");
@@ -724,9 +735,12 @@ function renderMap(){
   }
   $("map").innerHTML=h;
 }
-const GM={s:1,cx:0,cy:0};
-function gx(x){return 180+(x-GM.cx)*GM.s}function gy(y){return 180-(y-GM.cy)*GM.s}
-function gw(q){return{x:(q.x-180)/GM.s+GM.cx,y:(180-q.y)/GM.s+GM.cy}}
+const GM={s:1,cx:0,cy:0,th:0};
+/* 그린 화면 회전: th만큼 돌려 공→홀 방향이 화면 위쪽이 되게 함 (th=0이면 티 방향이 아래) */
+function gx(x,y){const c=Math.cos(GM.th),n=Math.sin(GM.th);return 180+((x-GM.cx)*c-(y-GM.cy)*n)*GM.s}
+function gy(x,y){const c=Math.cos(GM.th),n=Math.sin(GM.th);return 180-((x-GM.cx)*n+(y-GM.cy)*c)*GM.s}
+function gw(q){const c=Math.cos(GM.th),n=Math.sin(GM.th),rx=(q.x-180)/GM.s,ry=(180-q.y)/GM.s;return{x:rx*c+ry*n+GM.cx,y:-rx*n+ry*c+GM.cy}}
+function gdir(v){const c=Math.cos(GM.th),n=Math.sin(GM.th);return{x:v.x*c-v.y*n,y:-(v.x*n+v.y*c)}}
 function greenW(){const gs=greenSize();return hd().greenPhoto?40:Math.max(gs.w,gs.d)+12}
 function greenFrame(){
   const ph=photo();let u={x:0,y:-1};
@@ -735,8 +749,10 @@ function greenFrame(){
 }
 function greenImg(s){
   const gp=hd().greenPhoto;if(!gp)return "";
-  const {u,r}=greenFrame(),f=s/gp.pxPerM;
-  const a=f*r.x,c=f*r.y,b=-f*u.x,d=-f*u.y,e=180-(a*gp.c.x+c*gp.c.y)-GM.cx*s,g=180-(b*gp.c.x+d*gp.c.y)+GM.cy*s;
+  const {u,r}=greenFrame(),fp=1/gp.pxPerM,co=Math.cos(GM.th),sn=Math.sin(GM.th);
+  const A=s*co,C=-s*sn,E=180-s*(co*GM.cx-sn*GM.cy),B=-s*sn,D=-s*co,F=180+s*(sn*GM.cx+co*GM.cy);
+  const rC=r.x*gp.c.x+r.y*gp.c.y,uC=u.x*gp.c.x+u.y*gp.c.y;
+  const a=fp*(A*r.x+C*u.x),c=fp*(A*r.y+C*u.y),e=E-fp*(A*rC+C*uC),b=fp*(B*r.x+D*u.x),d=fp*(B*r.y+D*u.y),g=F-fp*(B*rC+D*uC);
   let h=`<image href="${assetURL(gp.id)}" x="0" y="0" width="${gp.w}" height="${gp.h}" transform="matrix(${a} ${b} ${c} ${d} ${e} ${g})" preserveAspectRatio="none"/>`;
   const gr=gridOf();
   if(gr&&gr.heatId&&S.profile.greenView==="heat"){const k=gr.heatScale||2;
@@ -814,11 +830,12 @@ function flowAt(q,src){
 }
 function drawFlow(gpOn,W,gs){
   const src=flowSource();if(!src)return"";
-  const Wv=340/GM.s,step=Math.max(1,Wv/11),x0=GM.cx-Wv/2,y0=GM.cy-Wv/2;let a="";
-  for(let x=x0+step/2;x<x0+Wv;x+=step)for(let y=y0+step/2;y<y0+Wv;y+=step){
+  const Wv=340/GM.s,step=Math.max(1,Wv/11),R=GM.th?Wv*0.75:Wv/2,x0=GM.cx-R,y0=GM.cy-R;let a="";
+  for(let x=x0+step/2;x<x0+2*R;x+=step)for(let y=y0+step/2;y<y0+2*R;y+=step){
+    if(GM.th){const X0=gx(x,y),Y0=gy(x,y);if(X0<6||X0>354||Y0<6||Y0>354)continue}
     if(!gpOn&&((x/(gs.w/2))**2+(y/(gs.d/2))**2>1))continue;
     const f=flowAt({x,y},src);if(!f||f.rel<0.05)continue;
-    const L=7+12*f.rel,X=gx(x),Y=gy(y),dx=f.x,dy=-f.y,x1=X-dx*L/2,y1=Y-dy*L/2,x2=X+dx*L/2,y2=Y+dy*L/2,px=-dy,py=dx;
+    const L=7+12*f.rel,X=gx(x,y),Y=gy(x,y),fd=gdir(f),dx=fd.x,dy=fd.y,x1=X-dx*L/2,y1=Y-dy*L/2,x2=X+dx*L/2,y2=Y+dy*L/2,px=-dy,py=dx;
     const op=(0.45+0.5*f.rel).toFixed(2);
     a+=`<g opacity="${op}"><line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}"/><path d="M${(x2+dx*3).toFixed(1)} ${(y2+dy*3).toFixed(1)} L${(x2-dx*3+px*3).toFixed(1)} ${(y2-dy*3+py*3).toFixed(1)} L${(x2-dx*3-px*3).toFixed(1)} ${(y2-dy*3-py*3).toFixed(1)}Z"/></g>`}
   return `<g stroke="#fff" fill="#fff" stroke-width="1.6" stroke-linecap="round" pointer-events="none">${a}</g>`;
@@ -839,7 +856,9 @@ function renderGreen0(){
   {const me0=meNow(),p0=pin(),inWin=me0&&Math.abs(me0.x)<W/2&&Math.abs(me0.y)<W/2;
    if(!S.dragging){
     if(inWin&&S.gZoom!==false){const D=dist(me0,p0),Wv=Math.max(8,Math.min(W,D*1.5+4));GM.s=340/Wv;GM.cx=(me0.x+p0.x)/2;GM.cy=(me0.y+p0.y)/2}
-    else{GM.s=340/W;GM.cx=0;GM.cy=0}}}
+    else{GM.s=340/W;GM.cx=0;GM.cy=0}
+    /* 내 위치 기준 방향: 공→홀이 화면 위로. 공이 홀에 1.5m보다 가까우면 직전 방향 유지 */
+    if(S.gRot==="me"&&inWin){const D=dist(me0,p0);if(D>1.5)GM.th=Math.atan2(p0.x-me0.x,p0.y-me0.y)}else if(S.gRot!=="me"||!inWin)GM.th=0}}
   const s=GM.s;
   const p=pin(),me=meNow(),sl=slope();let h=`<rect width="360" height="360" fill="var(--rough)"/>`;
   if(gpOn){h+=`<defs><clipPath id="gc"><rect width="360" height="360"/></clipPath></defs>`+greenImg(s)}
@@ -847,40 +866,44 @@ function renderGreen0(){
   h+=`<defs><clipPath id="gc"><ellipse cx="180" cy="180" rx="${gs.w/2*s}" ry="${gs.d/2*s}"/></clipPath></defs>`;
   h+=`<ellipse cx="180" cy="180" rx="${gs.w/2*s}" ry="${gs.d/2*s}" fill="var(--green)" stroke="var(--green-edge)" stroke-width="2"/>`;}
   h+=drawFlow(gpOn,W,gs);
-  h+=`<text x="180" y="352" text-anchor="middle" font-size="12" fill="var(--path)" opacity=".75">↓ 티 방향 (그린 앞)</text>`;
+  if(Math.abs(GM.th)<0.02)h+=`<text x="180" y="352" text-anchor="middle" font-size="12" fill="var(--path)" opacity=".75">↓ 티 방향 (그린 앞)</text>`;
+  else{const v=gdir({x:0,y:-1}),cx0=26,cy0=62,L=14;
+    h+=`<g pointer-events="none"><circle cx="${cx0}" cy="${cy0}" r="20" fill="rgba(0,0,0,.5)"/><line x1="${cx0-v.x*L}" y1="${cy0-v.y*L}" x2="${cx0+v.x*L}" y2="${cy0+v.y*L}" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/><circle cx="${cx0+v.x*L}" cy="${cy0+v.y*L}" r="3.5" fill="#fff"/><text x="${cx0}" y="${cy0+33}" text-anchor="middle" font-size="11" font-weight="700" fill="#fff" stroke="#000" stroke-width="3" paint-order="stroke">티 쪽</text></g>`;
+    h+=`<text x="180" y="352" text-anchor="middle" font-size="12" fill="#fff" stroke="#000" stroke-width="3" paint-order="stroke" opacity=".85">↑ 홀 방향 (공 뒤에서 본 그림)</text>`}
   let res=null;
   const ball=me&&Math.abs(me.x)<W/2&&Math.abs(me.y)<W/2?me:null;
   if(ball){res=S.dragging?null:putt(ball,p);
     if(res&&!S.profile.comp){
       const E=S.bendX||1,D0=dist(ball,p),fu={x:(p.x-ball.x)/(D0||1),y:(p.y-ball.y)/(D0||1)},ru={x:fu.y,y:-fu.x};
       const ex=(x,y)=>{const dx=x-ball.x,dy=y-ball.y,al=dx*fu.x+dy*fu.y,la=dx*ru.x+dy*ru.y*1;return{x:ball.x+fu.x*al+ru.x*la*E,y:ball.y+fu.y*al+ru.y*la*E}};
-      const pl=res.sim.pts.map(q=>{const t=ex(q[0],q[1]);return gx(t.x).toFixed(1)+","+gy(t.y).toFixed(1)}).join(" ");
+      const pl=res.sim.pts.map(q=>{const t=ex(q[0],q[1]);return gx(t.x,t.y).toFixed(1)+","+gy(t.x,t.y).toFixed(1)}).join(" ");
       const am=ex(res.aim.x,res.aim.y);
-      h+=`<line x1="${gx(ball.x)}" y1="${gy(ball.y)}" x2="${gx(am.x)}" y2="${gy(am.y)}" stroke="#FFD400" stroke-width="2" stroke-dasharray="5 4" opacity=".9"/>`;
+      h+=`<line x1="${gx(ball.x,ball.y)}" y1="${gy(ball.x,ball.y)}" x2="${gx(am.x,am.y)}" y2="${gy(am.x,am.y)}" stroke="#FFD400" stroke-width="2" stroke-dasharray="5 4" opacity=".9"/>`;
       h+=`<polyline points="${pl}" fill="none" stroke="#10261c" stroke-width="6" stroke-linecap="round" opacity=".55"/><polyline points="${pl}" fill="none" stroke="#FFD400" stroke-width="3.5" stroke-linecap="round"/>`;
-      h+=`<circle cx="${gx(am.x)}" cy="${gy(am.y)}" r="6" fill="none" stroke="#FFD400" stroke-width="3"/>`;
-      const side=(res.off>0?1:-1),lx=gx(am.x)+(gx(am.x)>300?-40:gx(am.x)<60?40:0),ly=gy(am.y)+(gy(am.y)<40?22:-12);
+      h+=`<circle cx="${gx(am.x,am.y)}" cy="${gy(am.x,am.y)}" r="6" fill="none" stroke="#FFD400" stroke-width="3"/>`;
+      const side=(res.off>0?1:-1),lx=gx(am.x,am.y)+(gx(am.x,am.y)>300?-40:gx(am.x,am.y)<60?40:0),ly=gy(am.x,am.y)+(gy(am.x,am.y)<40?22:-12);
       h+=`<text x="${lx}" y="${ly}" text-anchor="middle" font-size="13" font-weight="700" fill="#FFD400" stroke="#000" stroke-width="3" paint-order="stroke">조준${E>1?" (휨×"+E+")":""}</text>`;
     }
   }
-  if(ball){const lb=lieLabel(ball,p);if(lb){const X=gx(ball.x),Y=gy(ball.y),ty=Y>300?Y-18:Y+26;const anc=X>230?"end":X<130?"start":"middle";h+=`<text x="${X+(anc==="end"?8:anc==="start"?-8:0)}" y="${ty}" text-anchor="${anc}" font-size="13" font-weight="700" fill="#fff" stroke="#000" stroke-width="3" paint-order="stroke" pointer-events="none">라이: ${lb}</text>`}}
-  if(ball){const X1=gx(ball.x),Y1=gy(ball.y),X2=gx(p.x),Y2=gy(p.y);
+  if(ball){const lb=lieLabel(ball,p);if(lb){const X=gx(ball.x,ball.y),Y=gy(ball.x,ball.y),ty=Y>300?Y-18:Y+26;const anc=X>230?"end":X<130?"start":"middle";h+=`<text x="${X+(anc==="end"?8:anc==="start"?-8:0)}" y="${ty}" text-anchor="${anc}" font-size="13" font-weight="700" fill="#fff" stroke="#000" stroke-width="3" paint-order="stroke" pointer-events="none">라이: ${lb}</text>`}}
+  if(ball){const X1=gx(ball.x,ball.y),Y1=gy(ball.x,ball.y),X2=gx(p.x,p.y),Y2=gy(p.x,p.y);
     h+=`<line x1="${X1}" y1="${Y1}" x2="${X2}" y2="${Y2}" stroke="#fff" stroke-width="${res?1.5:3}" stroke-dasharray="${res?"3 4":"7 5"}" opacity=".95"/>`;
     const mx=(X1+X2)/2,my=(Y1+Y2)/2;h+=`<text x="${mx+8}" y="${my-6}" font-family="Barlow Condensed,Arial Narrow,sans-serif" font-size="20" font-weight="700" fill="#fff" stroke="#000" stroke-width="3" paint-order="stroke">${dist(ball,p).toFixed(1)}m</text>`}
   if(gpOn&&isAbs()&&S.profile.greenView==="heat"){
     h+=`<defs><linearGradient id="lg" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#4666dd"/><stop offset=".25" stop-color="#17dcc2"/><stop offset=".5" stop-color="#a9fb39"/><stop offset=".75" stop-color="#fea12f"/><stop offset="1" stop-color="#c32402"/></linearGradient></defs>`;
     h+=`<g pointer-events="none" font-size="10" font-weight="700" fill="#fff" stroke="#000" stroke-width="2.5" paint-order="stroke"><rect x="336" y="170" width="10" height="120" rx="3" fill="url(#lg)" stroke="#fff" stroke-width="1"/><text x="332" y="176" text-anchor="end">+0.5m</text><text x="332" y="234" text-anchor="end">0</text><text x="332" y="292" text-anchor="end">-0.5m</text></g>`}
-  h+=`<circle cx="${gx(p.x)}" cy="${gy(p.y)}" r="${Math.max(4,CUP/2*s)}" fill="#0b1a12"/>`;
-  h+=flag(gx(p.x),gy(p.y),9);
-  h+=`<circle cx="${gx(p.x)}" cy="${gy(p.y)}" r="20" fill="transparent" data-drag="pin" style="cursor:grab"/>`;
+  h+=`<circle cx="${gx(p.x,p.y)}" cy="${gy(p.x,p.y)}" r="${Math.max(4,CUP/2*s)}" fill="#0b1a12"/>`;
+  h+=flag(gx(p.x,p.y),gy(p.x,p.y),9);
+  h+=`<circle cx="${gx(p.x,p.y)}" cy="${gy(p.x,p.y)}" r="20" fill="transparent" data-drag="pin" style="cursor:grab"/>`;
   if(ball){const dr=S.mode==="sample";
-    h+=`<circle cx="${gx(ball.x)}" cy="${gy(ball.y)}" r="${Math.max(5,0.0214*s)}" fill="#fff" stroke="#15372A" stroke-width="1.5" pointer-events="none"/>`;
-    if(dr)h+=`<circle cx="${gx(ball.x)}" cy="${gy(ball.y)}" r="20" fill="transparent" data-drag="ball" style="cursor:grab"/>`;}
+    h+=`<circle cx="${gx(ball.x,ball.y)}" cy="${gy(ball.x,ball.y)}" r="${Math.max(5,0.0214*s)}" fill="#fff" stroke="#15372A" stroke-width="1.5" pointer-events="none"/>`;
+    if(dr)h+=`<circle cx="${gx(ball.x,ball.y)}" cy="${gy(ball.x,ball.y)}" r="20" fill="transparent" data-drag="ball" style="cursor:grab"/>`;}
   $("gsvg").innerHTML=h;
   renderPuttStats(ball,res);renderLie(ball);
   document.querySelectorAll("[data-gt]").forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.gt===S.greenTap)));
   renderGRead(ball,res);renderGQuick(ball);
   const bb=$("gBendBtn");bb.hidden=!(ball&&res);bb.textContent=(S.bendX||1)>1?"휨 강조 끄기":"휨 3배 강조";
+  const rb=$("gRotBtn");rb.hidden=!ball;rb.textContent=S.gRot==="me"?"티 방향으로 보기":"내 방향으로 보기";
   const zb=$("gZoomBtn");zb.hidden=!ball;zb.textContent=S.gZoom===false?"공·홀 확대":"전체 보기";
   const ov=$("gOver");
   if(ball&&res&&!S.profile.comp){ov.hidden=false;ov.textContent=dist(ball,p).toFixed(1)+"m · "+cupText(res.off)+" · "+riseText(riseCm(ball,p))}
@@ -1085,7 +1108,42 @@ function renderShotStats(){
     td.appendChild(b);tr.appendChild(td);tb.appendChild(tr)});
   t.appendChild(tb);st.appendChild(t);
 }
+function geoExport(){
+  const c=course();if(!c)return null;const out={};let n=0;
+  for(const [nid,nine] of Object.entries(c.nines||{}))for(const [h,hole] of Object.entries(nine.holes||{})){
+    const g=hole&&hole.geo;if(!g)continue;const t=g.tee&&Object.keys(g.tee).length,gr=g.green;
+    if(!t&&!gr)continue;(out[nid]=out[nid]||{})[h]=g;n+=(t||0)+(gr?1:0)}
+  return{n,text:"GD-GEO v1\n"+JSON.stringify({course:S.round.courseId,at:new Date().toISOString().slice(0,16),geo:out})}
+}
+function renderGeoX(){const r=geoExport();const el=$("geoXInfo");if(el)el.textContent=r?(r.n?"이 휴대폰에 저장된 좌표 "+r.n+"개":"아직 저장한 좌표가 없습니다"):"골프장을 먼저 고르세요"}
+async function geoImport(txt){
+  const i=txt.indexOf("{");if(txt.indexOf("GD-GEO")<0||i<0){toast("좌표 글 형식이 아닙니다. 'GD-GEO v1'로 시작하는 글 전체를 붙여넣으세요");return}
+  let d;try{d=JSON.parse(txt.slice(i))}catch(e){toast("좌표 글을 읽지 못했습니다. 글 전체가 붙여넣어졌는지 확인하세요");return}
+  const c=S.courses[d.course];if(!c||!d.geo){toast("이 골프장 데이터와 맞지 않는 좌표입니다");return}
+  const ok=v=>v&&isFinite(v.lat)&&isFinite(v.lng)&&Math.abs(v.lat)<=90&&Math.abs(v.lng)<=180;
+  let n=0;const writes=[];
+  for(const [nid,holes] of Object.entries(d.geo)){if(!c.nines||!c.nines[nid])continue;
+    for(const [h,g] of Object.entries(holes)){const add={};
+      if(g.tee)for(const [tk,v] of Object.entries(g.tee))if(ok(v)){(add.tee=add.tee||{})[tk]={lat:+v.lat,lng:+v.lng,...(v.acc?{acc:+v.acc}:{})};n++}
+      if(ok(g.green)){add.green={lat:+g.green.lat,lng:+g.green.lng,...(g.green.acc?{acc:+g.green.acc}:{})};n++}
+      if(!add.tee&&!add.green)continue;
+      const hole=(c.nines[nid].holes=c.nines[nid].holes||{})[h]=c.nines[nid].holes[h]||{};
+      hole.geo=hole.geo||{};if(add.tee)hole.geo.tee={...(hole.geo.tee||{}),...add.tee};if(add.green)hole.geo.green=add.green;
+      writes.push([nid,h,add])}}
+  if(!n){toast("가져올 좌표가 없습니다");return}
+  if(!(await askConfirm("좌표 "+n+"개를 가져옵니다. 같은 티·그린에 이미 있는 좌표는 새 값으로 바뀝니다.")))return;
+  if(S.db){try{for(const [nid,h,add] of writes)await S.db.doc("courses/"+d.course).update({nines:{[nid]:{holes:{[h]:{geo:add}}}}})}catch(e){toast("일부 좌표를 저장하지 못했습니다");render();return}}
+  else lset("gd.courses",JSON.stringify(S.courses));
+  toast("좌표 "+n+"개를 가져왔습니다");render();
+}
+$("geoXCopy").onclick=async()=>{const r=geoExport();if(!r){toast("골프장을 먼저 고르세요");return}if(!r.n){toast("아직 저장한 좌표가 없습니다");return}
+  const ta=$("geoXText");ta.value=r.text;let done=false;
+  try{if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(r.text);done=true}}catch(e){}
+  if(!done){ta.focus();ta.select();try{done=document.execCommand("copy")}catch(e){}}
+  toast(done?"좌표 "+r.n+"개를 복사했습니다. 카톡이나 Claude에 붙여넣으세요":"아래 글을 길게 눌러 전체 선택 후 복사하세요")};
+$("geoXImport").onclick=()=>{const t=$("geoXText").value.trim();if(!t){toast("받은 좌표 글을 아래 칸에 붙여넣어 주세요");return}geoImport(t)};
 function renderData(){
+  renderGeoX();
   const cs=$("courseSel");cs.textContent="";
   const ids=Object.keys(S.courses);
   if(!ids.length){const o=document.createElement("option");o.value="";o.textContent="골프장을 불러오는 중이거나 없습니다";cs.appendChild(o)}
@@ -1358,6 +1416,7 @@ $("photoFile").onchange=async e=>{
     im.src=r.url;
   }catch(err){toast("올리지 못했습니다 ("+(err&&err.code||"오류")+")")}
 };
+["touchstart","pointerdown","wheel"].forEach(ev=>$("scroller").addEventListener(ev,()=>{S.userScrollAt=Date.now()},{passive:true}));
 $("holeImg").addEventListener("load",()=>{if(S.view==="hole"&&S.holeView==="photo"){renderPhoto();if(S.pendScroll&&scrollToMe())S.pendScroll=false}});
 $("zIn").onclick=()=>{S.zoom=Math.min(4,S.zoom+0.5);renderPhoto()};
 $("zOut").onclick=()=>{S.zoom=Math.max(1,S.zoom-0.5);renderPhoto()};
@@ -1376,6 +1435,7 @@ $("rsAll").onclick=async()=>{if(!(await askConfirm("그린 스피드, 높낮이,
   S.me=null;S.gZoom=true;S.bendX=3;
   patchHole({heatPct:0,slope:{dir:-90,pct:0}}).then(()=>{render();toast("라이 설정을 초기화했습니다")})};
 $("gZoomBtn").onclick=()=>{S.gZoom=S.gZoom===false;renderGreen()};
+$("gRotBtn").onclick=()=>{S.gRot=S.gRot==="me"?"tee":"me";lset("gd.gRot",S.gRot);renderGreen()};
 $("gBendBtn").onclick=()=>{S.bendX=(S.bendX||1)>1?1:3;renderGreen()};
 document.querySelectorAll("[data-gt]").forEach(b=>b.onclick=()=>{S.greenTap=b.dataset.gt;renderGreen()});
 document.querySelectorAll("[data-sm]").forEach(b=>b.onclick=()=>{S.profile.slopeModel=b.dataset.sm;saveProfile();render()});
